@@ -1,0 +1,251 @@
+name: Python Assessment Grader
+
+on:
+  push:
+    branches-ignore: [main] # Trigger on push to any branch except main
+  pull_request_target:
+    branches:
+      - main # Trigger on pull requests targeting the main branch
+
+jobs:
+  grade_assessment:
+    runs-on: ubuntu-latest # Run on a fresh Ubuntu environment
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          # For pull_request_target, this action checks out the base branch (e.g., 'main').
+          # We will then fetch and merge the pull request's head to securely test its content.
+          ref: ${{ github.ref }}
+
+      - name: Fetch Pull Request Head (for pull_request_target)
+        if: github.event_name == 'pull_request_target' # Only run this step if the event is pull_request_target
+        run: |
+          # Fetch the head of the pull request and merge it into the current branch (main)
+          git fetch origin ${{ github.event.pull_request.head.ref }}
+          git merge FETCH_HEAD --no-edit
+
+      - name: Set up Python
+        uses: actions/setup-python@v5 # Set up Python environment
+        with:
+          python-version: '3.x' # Use the latest available Python 3.x version
+
+      - name: Get Git User Info
+        id: git # ID for this step, allowing its outputs to be referenced
+        run: |
+          # Determine the author's name and email for the email notification
+          # For pull_request_target, get info from the PR event payload
+          if [[ "${{ github.event_name }}" == "pull_request_target" ]]; then
+            AUTHOR_NAME="${{ github.event.pull_request.user.login }}"
+            # Use a fallback email if the user's email is private or not available
+            AUTHOR_EMAIL="${{ github.event.pull_request.user.email || github.event.pull_request.user.login }}@users.noreply.github.com"
+          else
+            # For push events, get info from the last commit
+            AUTHOR_NAME="$(git log -1 --pretty=format:'%an')"
+            AUTHOR_EMAIL="$(git log -1 --pretty=format:'%ae')"
+          fi
+
+          # Ensure AUTHOR_EMAIL is not empty, use a generic GitHub noreply email as a fallback
+          if [[ -z "$AUTHOR_EMAIL" ]]; then
+            AUTHOR_EMAIL="${{ github.actor }}@users.noreply.github.com"
+          fi
+
+          # Set outputs for subsequent steps
+          echo "name=$AUTHOR_NAME" >> "$GITHUB_OUTPUT"
+          echo "email=$AUTHOR_EMAIL" >> "$GITHUB_OUTPUT"
+
+      - name: Create run_tests.py script
+        # This step creates a Python script inline that will execute and parse test results
+        run: |
+          cat << 'EOF' > run_tests.py
+          import unittest
+          import os
+          import sys
+          import subprocess
+          import re
+          from io import StringIO
+
+          def parse_unittest_output(output):
+              """Parses the output of unittest to extract total, passed, failed, and errored test counts."""
+              passed = 0
+              failed = 0
+              errored = 0
+              total = 0
+              
+              # Regex to find the total number of tests run
+              match_run = re.search(r'Ran (\d+) test', output)
+              if match_run:
+                  total = int(match_run.group(1))
+
+              # Regex to find failures and errors reported by unittest
+              match_fail_error = re.search(r'FAILED \(failures=(\d+)(, errors=(\d+))?\)', output)
+              if match_fail_error:
+                  failed = int(match_fail_error.group(1))
+                  if match_fail_error.group(3):
+                      errored = int(match_fail_error.group(3))
+              # If 'OK' is in the output and tests ran, assume all passed
+              elif 'OK' in output and 'Ran' in output:
+                  passed = total
+
+              # Calculate passed tests based on total and detected failures/errors
+              passed = total - failed - errored
+              return total, passed, failed, errored
+
+          if __name__ == "__main__":
+              total_passed = 0
+              total_failed = 0
+              total_errored = 0
+              total_run = 0
+              message = "All tests passed successfully!" # Default success message
+              student_tests_found = False
+
+              # --- Run Provided Tests ---
+              print("::group::Running Provided Tests")
+              provided_total, provided_passed, provided_failed, provided_errored = 0, 0, 0, 0
+              try:
+                  # Run unittest discover in the 'tests/' directory
+                  result = subprocess.run(
+                      ['python', '-m', 'unittest', 'discover', 'tests/'],
+                      capture_output=True, text=True, check=False
+                  )
+                  provided_output = result.stdout + result.stderr
+                  provided_total, provided_passed, provided_failed, provided_errored = parse_unittest_output(provided_output)
+                  
+                  print(provided_output) # Print actual output for GitHub Actions logs
+                  print(f"Provided Tests Summary: Total={provided_total}, Passed={provided_passed}, Failed={provided_failed}, Errored={provided_errored}")
+
+                  total_run += provided_total
+                  total_passed += provided_passed
+                  total_failed += provided_failed
+                  total_errored += provided_errored
+              except Exception as e:
+                  print(f"Error running provided tests: {e}", file=sys.stderr)
+                  total_failed += 1 # Increment failure count if tests cannot be run
+                  message = "Failed to run provided tests due to an unexpected error."
+              print("::endgroup::")
+
+              # --- Run Student Tests if they exist ---
+              student_tests_file = 'student_tests.py'
+              student_total, student_passed, student_failed, student_errored = 0, 0, 0, 0
+              if os.path.exists(student_tests_file):
+                  student_tests_found = True
+                  print(f"::group::Running Student Tests ({student_tests_file})")
+                  try:
+                      # Run the student tests file directly as a unittest module
+                      result = subprocess.run(
+                          ['python', '-m', 'unittest', student_tests_file],
+                          capture_output=True, text=True, check=False
+                      )
+                      student_output = result.stdout + result.stderr
+                      student_total, student_passed, student_failed, student_errored = parse_unittest_output(student_output)
+                      
+                      print(student_output) # Print actual output for GitHub Actions logs
+                      print(f"Student Tests Summary: Total={student_total}, Passed={student_passed}, Failed={student_failed}, Errored={student_errored}")
+
+                      total_run += student_total
+                      total_passed += student_passed
+                      total_failed += student_failed
+                      total_errored += student_errored
+                  except Exception as e:
+                      print(f"Error running student tests: {e}", file=sys.stderr)
+                      total_failed += 1 # Increment failure count if tests cannot be run
+                      message = "Failed to run student tests due to an unexpected error."
+                  print("::endgroup::")
+              else:
+                  print(f"Warning: {student_tests_file} not found in the root directory. No student tests were run.")
+                  # Absence of student_tests.py is handled in the final message logic below
+
+              # --- Aggregate and Determine Final Message ---
+              final_failed_count = total_failed + total_errored # Combine failures and errors for summary
+
+              if final_failed_count > 0:
+                  if not student_tests_found:
+                      message = "Missing `student_tests.py`. Please create this file with your tests."
+                  elif provided_total > 0 and (provided_failed > 0 or provided_errored > 0):
+                      message = "Some provided tests failed."
+                  elif student_total > 0 and (student_failed > 0 or student_errored > 0):
+                      message = "Some student tests failed."
+                  else: # Generic failure message if no specific failure type, but count is > 0
+                      message = f"{final_failed_count} test(s) failed or encountered errors."
+              else: # All tests passed (or zero tests found/run)
+                  if not student_tests_found:
+                      message = "Missing `student_tests.py`. All provided tests passed, but your tests were not found."
+                      final_failed_count += 1 # Count missing student tests as a failure for the email summary
+                  elif total_run == 0:
+                      message = "No tests were found or run. Please ensure your test files are correctly named and located."
+                  else:
+                      message = "All tests passed successfully!"
+
+              # --- Set Outputs for GitHub Actions ---
+              # These outputs will be available to subsequent steps using `steps.results.outputs.xyz`
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write(f"passed={total_passed}\n")
+                  f.write(f"failed={final_failed_count}\n")
+                  f.write(f"total={total_run}\n")
+                  f.write(f"message={message}\n")
+          EOF
+
+      - name: Run Python Tests
+        id: results # This ID allows accessing outputs like steps.results.outputs.passed
+        run: python run_tests.py
+
+      - name: Send grading email
+        if: always() # This step will always run, regardless of previous step success/failure
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER || 'smtp.gmail.com' }}
+          server_port: ${{ secrets.SMTP_PORT || 465 }}
+          secure: ${{ secrets.SMTP_SECURE != 'false' }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          # Dynamically set subject for PRs vs. pushes
+          subject: >
+            Test Results: ${{ github.event_name == 'pull_request_target' && format('PR #{0} ({1})', github.event.pull_request.number, github.event.pull_request.head.ref) || github.ref_name }} vs Main
+          to: ${{ steps.git.outputs.email }} # Email recipient from the 'Get Git User Info' step
+          from: "Automated Test Grader <${{ secrets.SMTP_USERNAME }}>"
+          convert_markdown: false # Set to false as the body is HTML
+
+          # HTML body for the email notification
+          html_body: |
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; max-width: 600px; margin: 0 auto;">
+              <div style="background: #f8f9fa; padding: 20px; border-radius: 8px;">
+                <h2 style="color: #2c3e50; border-bottom: 1px solid #eee; padding-bottom: 10px;">
+                  🧪 Test Grading Report
+                </h2>
+                
+                <div style="margin: 15px 0;">
+                  <p>Hello <strong>${{ steps.git.outputs.name }}</strong>,</p>
+                  <p>Here are your test results comparing <strong>
+                    ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.ref || github.ref_name }}
+                  </strong> against the <code>main</code> branch:</p>
+                </div>
+
+                <div style="background: white; padding: 15px; border-radius: 5px; border-left: 4px solid ${{ steps.results.outputs.failed != '0' && '#e74c3c' || '#2ecc71' }};">
+                  <h3 style="margin-top: 0;">Summary</h3>
+                  <ul style="padding-left: 20px;">
+                    <li>✅ <strong>Passed:</strong> ${{ steps.results.outputs.passed }}</li>
+                    <li>❌ <strong>Failed:</strong> ${{ steps.results.outputs.failed }}</li>
+                    <li>📊 <strong>Total Tests:</strong> ${{ steps.results.outputs.total }}</li>
+                  </ul>
+                  <p style="font-weight: bold; color: ${{ steps.results.outputs.failed != '0' && '#e74c3c' || '#2ecc71' }};">
+                    ${{ steps.results.outputs.message }}
+                  </p>
+                </div>
+
+                <div style="margin-top: 20px; font-size: 0.9em; color: #7f8c8d;">
+                  <p>
+                    <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" 
+                       style="color: #3498db; text-decoration: none;">
+                      🔍 View detailed test logs
+                    </a>
+                  </p>
+                  <p>Branch: <code>
+                    ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.ref || github.ref_name }}
+                  </code></p>
+                  <p>Triggered by: ${{ github.actor }}</p>
+                </div>
+              </div>
+            </body>
+            </html>
