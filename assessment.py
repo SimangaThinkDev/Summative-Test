@@ -15,7 +15,7 @@ def validate_user_credentials(username: str, password: str) -> tuple[bool, str]:
     Returns:
         tuple: (bool, str) where bool indicates validity and str contains error message if invalid
     """
-    pass
+    return ( False, "Not correct" )
 
 
 def extract_hashtags(text: str) -> list[str] :
