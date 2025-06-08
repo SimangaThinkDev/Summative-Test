@@ -83,5 +83,17 @@ class StudentTests(unittest.TestCase):
         self.assertEqual( tic_tac_toe_winner( board4 , "O") )
 
 
+    def test_analyze_stock_prices(self) -> None:
+
+        market1 = [ 22, 22.4, 23.12, 21, 17.99, 25.60, 27, 22 ]
+        self.assertEqual( analyze_stock_prices( market1 ), ( 4, 7 ) ) # 7 Not inclusive
+        
+        market2 = [ 100, 100.5, 98.99, 110, 115.30, 113, 117, 122.30, 140, 133.40, 130.98, 128.12 ]
+        self.assertEqual( analyze_stock_prices( market2 ), ( 5, 9 ) ) # 9 Not inclusive
+        
+        market3 = [  ]
+        self.assertEqual( analyze_stock_prices( market3 ), ( None, None ) ) # as per the question
+
+
 if __name__ == "__main__":
     unittest.main( verbosity=2 )
