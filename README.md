@@ -1,4 +1,5 @@
 # Summative-Test Practice
+## Author: Simangaliso Innocent Phakwe
 
 ## Your Mission, Should You Choose to Accept It...
 Welcome, code warrior, to **Python SkillForge: Module 2**! This isn't just an assessment; it's a gauntlet designed to hone your Python skills, pushing you to think critically and embrace the robust practice of **Test-Driven Development (TDD)**. You'll be breathing life into dormant functions within `assessment.py`, and your mastery will be measured by whether your code stands up to the ultimate judge: the unit tests.
